@@ -1,20 +1,31 @@
-const express = require('express');
-const bodyParser = require('body-parser');
+const express = require("express");
+const bodyParser = require("body-parser");
 const mongoose = require("mongoose");
-const cors = require('cors');
+const cors = require("cors");
 const multer = require("multer");
 const path = require("path");
 const File = require("./schema");
 const User = require("./UserSchema");
+const azure = require('azure-storage');
 const fs = require("fs"); // Added this line to use 'fs'
 
-const { BlobServiceClient, StorageSharedKeyCredential } = require("@azure/storage-blob");
+const {
+  BlobServiceClient,
+  StorageSharedKeyCredential,
+} = require("@azure/storage-blob");
 
 const accountName = "siddvinay";
-const accountKey = "9Zct7vAKKhv4bgztNT+b7aU3FpXpEkkkKga9Kuvh9NbrtJXGg3Brzo79DXPlfRDOh47OmwGGOfRq+AStXGNVHw==";
+const accountKey =
+  "9Zct7vAKKhv4bgztNT+b7aU3FpXpEkkkKga9Kuvh9NbrtJXGg3Brzo79DXPlfRDOh47OmwGGOfRq+AStXGNVHw==";
 
-const sharedKeyCredential = new StorageSharedKeyCredential(accountName, accountKey);
-const blobServiceClient = new BlobServiceClient(`https://${accountName}.blob.core.windows.net`, sharedKeyCredential);
+const sharedKeyCredential = new StorageSharedKeyCredential(
+  accountName,
+  accountKey
+);
+const blobServiceClient = new BlobServiceClient(
+  `https://${accountName}.blob.core.windows.net`,
+  sharedKeyCredential
+);
 
 const containerName = "uploads"; // Replace with your container name
 const containerClient = blobServiceClient.getContainerClient(containerName);
@@ -25,22 +36,18 @@ const port = process.env.PORT || 5000;
 app.use(bodyParser.json());
 app.use(cors());
 
-mongoose
-  .connect("mongodb+srv://alpha:P9UlObl4ugVQx8JF@cluster0.gbppnze.mongodb.net/3d", {
+mongoose.connect(
+  "mongodb+srv://alpha:P9UlObl4ugVQx8JF@cluster0.gbppnze.mongodb.net/3d",
+  {
     useNewUrlParser: true,
     useUnifiedTopology: true,
-  });
+  }
+);
 
-let filename;
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, 'uploads/'); // Specify the directory where uploaded files will be stored
-  },
-  filename: function (req, file, cb) {
-    filename = Date.now() + '-' + file.originalname;
-    cb(null, filename); // Define how the uploaded files should be named
-  },
-});
+
+const blobService = azure.createBlobService(accountName, accountKey);
+
+const storage = multer.memoryStorage(); // Use memory storage to store the file in memory
 
 const upload = multer({ storage: storage });
 
@@ -50,32 +57,42 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
       return res.status(400).json({ message: "No file uploaded" });
     }
 
-    console.log(req.body.email);
     const useremail = req.body.email;
-    const localFilePath = req.file.path;
 
-    // Use the Azure Storage SDK to upload the file to Azure Blob Storage
+    // Generate blobName directly based on the current timestamp and the original file name
     const blobName = Date.now() + "-" + req.file.originalname;
-    const blockBlobClient = containerClient.getBlockBlobClient(blobName);
 
-    await blockBlobClient.uploadFile(localFilePath);
+    // Upload the file to Azure Blob Storage using a readable stream
+    const readableStream = new require("stream").Readable();
+    readableStream._read = () => {};
+    readableStream.push(req.file.buffer);
+    readableStream.push(null);
 
-    console.log(localFilePath);
+    blobService.createBlockBlobFromStream(
+      containerName,
+      blobName,
+      readableStream,
+      req.file.size,
+      async (error, result, response) => {
+        if (error) {
+          console.error(error);
+          res.status(500).json({ message: "Internal server error" });
+        } else {
+          const fileUrl = blobService.getUrl(containerName, blobName);
 
-    // Clean up the local file after uploading to Azure
-    fs.unlinkSync(localFilePath);
+          // Save the file information (e.g., useremail, fileUrl) to your MongoDB database
+          const uploadfile = new File({
+            useremail: useremail,
+            filename: blobName,
+            path: fileUrl,
+          });
 
-    const fileUrl = blockBlobClient.url;
-    
-    // Save the file information (e.g., useremail, fileUrl) to your MongoDB database
-    const uploadfile = new File({
-      useremail: useremail,
-      filename: blobName,
-      path: fileUrl,
-    });
+          await uploadfile.save(); // Use await to handle the promise
 
-    await uploadfile.save();
-    res.json({ message: "File uploaded successfully" });
+          res.json({ message: "File uploaded successfully" });
+        }
+      }
+    );
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Internal server error" });
@@ -88,7 +105,9 @@ app.post("/api/login", async (req, res) => {
   try {
     const user = await User.findOne({ username });
     if (!user) {
-      return res.status(201).json({ message: "User not found. Please sign up." });
+      return res
+        .status(201)
+        .json({ message: "User not found. Please sign up." });
     }
 
     if (user.password === password) {
@@ -104,32 +123,37 @@ app.post("/api/login", async (req, res) => {
 
 app.post("/api/signup", async (req, res) => {
   try {
-    const { username, email ,password } = req.body;
+    const { username, email, password } = req.body;
 
-  const finduser = await User.findOne({ username });
+    const finduser = await User.findOne({ username });
 
-  if(finduser){
-    if(finduser.username === username) {
-      console.log("here??");
-      res.status(201).json({message:"user exists"});
+    if (finduser) {
+      if (finduser.username === username) {
+        console.log("here??");
+        res.status(201).json({ message: "user exists" });
+      }
+    } else {
+      const updateUser = new User({
+        username,
+        email,
+        password,
+      });
+
+      await updateUser.save();
+      res
+        .status(200)
+        .json({
+          message:
+            "user created successfully. Refresh the page and please login",
+        });
     }
-  } else {
-    const updateUser = new User({
-      username,
-      email,
-      password,
-    });
- 
-    await updateUser.save();
-    res.status(200).json({message:"user created successfully. Refresh the page and please login"});
-  }
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Internal server error" });
   }
 });
 
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 app.listen(port, () => {
   console.log(`app running on port ${port}`);
