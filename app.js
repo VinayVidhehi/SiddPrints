@@ -6,8 +6,22 @@ const multer = require("multer");
 const path = require("path");
 const File = require("./schema");
 const User = require("./UserSchema");
-const azure = require('azure-storage');
-const fs = require("fs"); // Added this line to use 'fs'
+const azure = require("azure-storage");
+const fs = require("fs");
+const crypto = require("crypto");
+const nodemailer = require("nodemailer");
+
+const transporter = nodemailer.createTransport({
+  service: "Gmail", // Use your email provider here (e.g., 'Gmail', 'Outlook', etc.)
+  auth: {
+    user: "vinayvidhehi@gmail.com", // Your email address
+    pass: "dzwh ckyj jfmt qgib ", // Your email password
+  },
+});
+
+function generateVerificationCode() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
 
 const {
   BlobServiceClient,
@@ -43,7 +57,6 @@ mongoose.connect(
     useUnifiedTopology: true,
   }
 );
-
 
 const blobService = azure.createBlobService(accountName, accountKey);
 
@@ -99,6 +112,8 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
   }
 });
 
+///////////////////////////////////////////////////////////////////////////////////
+
 app.post("/api/login", async (req, res) => {
   const { username, password } = req.body;
 
@@ -121,37 +136,79 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
-app.post("/api/signup", async (req, res) => {
+/////////////////////////////////////////////////////////////////////////////////////
+let verificationCode;
+
+app.post("/api/signup/verification", async (req, res) => {
   try {
-    const { username, email, password } = req.body;
+    const username = req.body.username;
+    const email = req.body.email;
 
     const finduser = await User.findOne({ username });
+    const findusermail = await User.findOne({ email });
 
-    if (finduser) {
-      if (finduser.username === username) {
-        console.log("here??");
+    if (finduser || findusermail) {
+      if (finduser && finduser.username === username) {
         res.status(201).json({ message: "user exists" });
+      } else if (findusermail && findusermail.email === email) {
+        res
+          .status(201)
+          .json({
+            message:
+              "email is already registered, use a different email or login",
+          });
       }
     } else {
-      const updateUser = new User({
-        username,
-        email,
-        password,
+      verificationCode = generateVerificationCode();
+      const mailOptions = {
+        from: "vinayvidhehi@gmail.com",
+        to: email, // The user's email address
+        subject: "Email Verification Code",
+        text: `Your verification code is: ${verificationCode}. We will communicate here further if required, thank you`,
+      };
+
+      transporter.sendMail(mailOptions, (error, info) => {
+        if (error) {
+          console.error("Error sending email: ", error);
+        } else {
+          console.log("Email sent: " + info.response);
+        }
       });
 
-      await updateUser.save();
+      console.log(verificationCode);
       res
         .status(200)
-        .json({
-          message:
-            "user created successfully. Refresh the page and please login",
-        });
+        .json({ message: "verification code sent", code: verificationCode });
     }
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Internal server error" });
   }
 });
+
+///////////////////////////////////////////////////////////////////////////////api/signup/verification
+
+app.post("/api/signup", async (req, res) => {
+  try {
+    const { username, email, password } = req.body;
+
+    const updateUser = new User({
+      username,
+      email,
+      password,
+    });
+
+    await updateUser.save();
+    res.status(200).json({
+      message: "user created successfully. Refresh the page and please login",
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+/////////////////////////////////////////////////////////////////////////////api/signup/verification
 
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
